@@ -29,15 +29,9 @@ const {
 
 const MODE = process.argv[2] || 'post';
 
-// Match Telegram MCP tool names. We host the server inside this plugin
-// (claude-telegram-companion), but the legacy patterns from the official
-// telegram@claude-plugins-official plugin remain to support side-by-side
-// during transition.
 function isTelegramTool(name) {
   return name.startsWith('mcp__plugin_claude-telegram-companion_telegram__')
-    || name.startsWith('mcp__plugin_claude_telegram_companion_telegram__')
-    || name.startsWith('mcp__plugin_telegram_telegram__')
-    || name.startsWith('mcp__telegram__');
+    || name.startsWith('mcp__plugin_claude_telegram_companion_telegram__');
 }
 function getTelegramAction(name) {
   const parts = name.split('__');

@@ -397,36 +397,6 @@ async function main() {
     return;
   }
 
-  process.stdout.write([
-    '[telegram-companion] Telegram behavioral rules:',
-    '',
-    'ROUTING',
-    '- Reply via Telegram, not transcript. Match the communication channel.',
-    '- For clarifying questions from a Telegram task: reply via Telegram with inline keyboard buttons instead of AskUserQuestion. Plain text for open-ended questions.',
-    '',
-    'FIRST ACTION',
-    '- React with \u{1F440} on every incoming message (enables progress tracking).',
-    '',
-    'FORMATTING',
-    '- Default format: "markdown" (auto-escapes to MarkdownV2 server-side). Use "markdownv2" only for spoilers, underline, or blockquotes, and load the telegram-markdownv2 skill first.',
-    '- No tables, headers (#), or horizontal rules (---): Telegram does not render them. Use *bold text* for section labels, emoji-prefixed lines for lists.',
-    '- Use language-tagged code blocks (```python) for syntax highlighting.',
-    '- Use > blockquotes for quoting messages or referenced content.',
-    '- Text messages: 4096 char limit (auto-chunked on paragraph boundaries, but write concisely).',
-    '- Photo/file captions: 1024 char limit. Keep captions short; send details as a separate text message.',
-    '',
-    'BUTTONS',
-    '- callback_data max 60 bytes. Use short values ("yes", "opt_1", not full sentences).',
-    '- Tapping a button removes the keyboard and delivers the data as a new inbound message.',
-    '',
-    'MEDIA',
-    '- Reply tool sends each file as a separate message. For photo albums (2-10 photos grouped), use sendMediaGroup via direct API call (see telegram-markdownv2 skill). Album captions: 1024 char limit.',
-    '- Voice/audio messages (attachment_kind: voice/audio) have attachment_file_id. Use the download_attachment tool to fetch the file.',
-    '',
-    'STYLE',
-    '- Emojis: sparingly and professionally (section headers, status indicators).',
-  ].join('\n') + '\n');
-
   // 2. Read config (optional; use defaults if missing)
   const config = readJSON(path.join(TELEGRAM_DIR, 'command-config.json')) || {
     commands: { sync: true, exclude: { plugins: [], skills: [] }, aliases: {}, extra: [] },

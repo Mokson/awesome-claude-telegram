@@ -7,7 +7,7 @@ Decoupled fork. The plugin now hosts its own Telegram MCP server and no longer d
 ### Breaking
 
 - Skill namespace: `/telegram:access` → `/claude-telegram-companion:access`. Same for `/telegram:configure`.
-- Voice transcription via `transcribe` skill removed. Voice messages now flow through the embedded server's `attachment_kind: voice` meta. Re-enable with a `TELEGRAM_VOICE_CMD` env var if needed.
+- Voice transcription via `transcribe` skill removed. Voice messages now flow through the embedded server's `attachment_kind: voice` meta.
 - Disable `telegram@claude-plugins-official` to avoid two pollers competing for the bot token.
 
 ### Added (cherry-picked PRs from anthropics/claude-plugins-official)
@@ -42,12 +42,6 @@ Decoupled fork. The plugin now hosts its own Telegram MCP server and no longer d
 
 - New `skills/access/` and `skills/configure/` ported from upstream and namespaced
 - Hook scripts updated to recognize `mcp__plugin_claude-telegram-companion_telegram__*` tool names
-
-### Deferred to v2.1.0
-
-- In-server `ProgressTracker` (currently still daemon-based)
-- Skill discovery engine moved into MCP server
-- `MCP instructions` field replacing SessionStart stdout injection
 
 ## v1.x
 

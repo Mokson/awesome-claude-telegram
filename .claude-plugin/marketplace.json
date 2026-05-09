@@ -10,7 +10,7 @@
     {
       "name": "claude-telegram-companion",
       "source": "./",
-      "description": "Rich formatting, live progress, voice transcription, and error forwarding for Telegram."
+      "description": "Rich formatting, live progress, and error forwarding for Telegram."
     }
   ]
 }
