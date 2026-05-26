@@ -948,7 +948,11 @@ await mcp.connect(new StdioServerTransport())
 // Replay any inbound messages persisted by a previous session that never got
 // confirmed delivery. Bot API has no history, so without this any message
 // that arrived while Claude was unreachable is lost forever.
-void queueReplayPending()
+// Delay: mcp.connect() establishes the stdio pipe, but Claude Code's channel
+// notification handler may still be initializing. Without a delay, replayed
+// notifications are written to the pipe (promise resolves, files move to
+// delivered/), but Claude never surfaces them.
+setTimeout(() => { void queueReplayPending() }, 5000)
 queuePruneDelivered()
 
 // When Claude Code closes the MCP connection, stdin gets EOF. Without this

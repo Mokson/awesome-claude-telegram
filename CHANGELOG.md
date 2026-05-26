@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.3.1
+
+### Fixed
+
+- Startup queue replay race condition: `queueReplayPending()` fired immediately after `mcp.connect()`, before Claude Code's channel notification handler was ready. Notifications were written to the stdio pipe (promise resolved, files moved to `delivered/`), but Claude never surfaced them. Added a 5-second delay to the initial replay so the notification handler has time to initialize.
+
 ## v2.0.0
 
 Decoupled fork. The plugin now hosts its own Telegram MCP server and no longer depends on `telegram@claude-plugins-official`.
