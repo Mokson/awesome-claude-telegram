@@ -23,112 +23,14 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, 
 import { homedir } from 'os'
 import { join, extname, sep } from 'path'
 
-// GitHub-flavored markdown → Telegram MarkdownV2 converter.
-// Lets callers pass `format: "markdown"` with natural markdown without
-// worrying about Telegram's MarkdownV2 escape rules.
-const MDV2_SPECIALS = /[_*\[\]()~`>#+\-=|{}.!\\]/g
-function escapeMdV2Text(s: string): string {
-  return s.replace(MDV2_SPECIALS, '\\$&')
-}
-function escapeMdV2Code(s: string): string {
-  return s.replace(/[`\\]/g, '\\$&')
-}
-function isWordChar(ch: string | undefined): boolean {
-  return ch !== undefined && /[\p{L}\p{N}_]/u.test(ch)
-}
-function githubMdToTelegramMdV2(input: string): string {
-  const parts: { kind: 'fence' | 'text', body: string, lang?: string }[] = []
-  const fenceRe = /```([a-zA-Z0-9_.+-]*)\n?([\s\S]*?)```/g
-  let last = 0
-  let m: RegExpExecArray | null
-  while ((m = fenceRe.exec(input)) !== null) {
-    if (m.index > last) parts.push({ kind: 'text', body: input.slice(last, m.index) })
-    parts.push({ kind: 'fence', lang: m[1], body: m[2] })
-    last = m.index + m[0].length
-  }
-  if (last < input.length) parts.push({ kind: 'text', body: input.slice(last) })
-
-  return parts.map(p => {
-    if (p.kind === 'fence') {
-      const lang = p.lang ?? ''
-      return '```' + lang + '\n' + escapeMdV2Code(p.body.replace(/\n$/, '')) + '\n```'
-    }
-    let out = ''
-    let i = 0
-    const s = p.body
-    while (i < s.length) {
-      if (s[i] === '`') {
-        const end = s.indexOf('`', i + 1)
-        if (end !== -1) {
-          out += '`' + escapeMdV2Code(s.slice(i + 1, end)) + '`'
-          i = end + 1
-          continue
-        }
-      }
-      if (s[i] === '*' && s[i + 1] === '*') {
-        const end = s.indexOf('**', i + 2)
-        if (end !== -1) {
-          out += '*' + escapeMdV2Text(s.slice(i + 2, end)) + '*'
-          i = end + 2
-          continue
-        }
-      }
-      if (s[i] === '_' && s[i + 1] === '_' && !isWordChar(s[i - 1]) && isWordChar(s[i + 2])) {
-        let j = i + 2
-        let matched = false
-        while ((j = s.indexOf('__', j)) !== -1) {
-          if (isWordChar(s[j - 1]) && !isWordChar(s[j + 2])) {
-            out += '*' + escapeMdV2Text(s.slice(i + 2, j)) + '*'
-            i = j + 2
-            matched = true
-            break
-          }
-          j++
-        }
-        if (matched) continue
-      }
-      if (s[i] === '~' && s[i + 1] === '~') {
-        const end = s.indexOf('~~', i + 2)
-        if (end !== -1) {
-          out += '~' + escapeMdV2Text(s.slice(i + 2, end)) + '~'
-          i = end + 2
-          continue
-        }
-      }
-      if (s[i] === '_' && !isWordChar(s[i - 1]) && isWordChar(s[i + 1])) {
-        let j = i + 1
-        let matched = false
-        while ((j = s.indexOf('_', j)) !== -1) {
-          if (isWordChar(s[j - 1]) && !isWordChar(s[j + 1])) {
-            out += '_' + escapeMdV2Text(s.slice(i + 1, j)) + '_'
-            i = j + 1
-            matched = true
-            break
-          }
-          j++
-        }
-        if (matched) continue
-      }
-      if (s[i] === '[') {
-        const closeBracket = s.indexOf(']', i + 1)
-        if (closeBracket !== -1 && s[closeBracket + 1] === '(') {
-          const closeParen = s.indexOf(')', closeBracket + 2)
-          if (closeParen !== -1) {
-            const linkText = s.slice(i + 1, closeBracket)
-            const url = s.slice(closeBracket + 2, closeParen)
-            out += '[' + escapeMdV2Text(linkText) + '](' + url.replace(/[)\\]/g, '\\$&') + ')'
-            i = closeParen + 1
-            continue
-          }
-        }
-      }
-      const ch = s[i]
-      out += /[_*\[\]()~`>#+\-=|{}.!\\]/.test(ch) ? '\\' + ch : ch
-      i++
-    }
-    return out
-  }).join('')
-}
+// MarkdownV2 helpers live in ./markdown.ts so they can be unit tested without
+// starting the bot. githubMdToTelegramMdV2 powers `format: "markdown"`;
+// entitiesToMarkdown reconstructs inbound formatting from Telegram entities.
+import {
+  githubMdToTelegramMdV2,
+  entitiesToMarkdown,
+  type InboundEntity,
+} from './markdown.ts'
 
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'telegram')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -599,10 +501,10 @@ const mcp = new Server(
       'ROUTING: For clarifying questions from a Telegram task, reply via Telegram with inline keyboard buttons instead of AskUserQuestion. Plain text for open-ended questions.',
       '',
       'FORMATTING:',
-      '- Default format: "markdown" (auto-escapes to MarkdownV2 server-side). Use "markdownv2" only for spoilers, underline, or blockquotes, and load the telegram-markdownv2 skill first.',
+      '- Default format: "markdown" (auto-escapes to MarkdownV2 server-side). It covers **bold**, _italic_, ~~strike~~, `code`, fenced code, [links](url), ||spoilers||, > blockquotes (start the first line with >! for an expandable/collapsed quote), and custom emoji ![glyph](tg://emoji?id=<id>). Use "markdownv2" only for raw control beyond these; load the telegram-markdownv2 skill first.',
       '- No tables, headers (#), or horizontal rules (---): Telegram does not render them. Use *bold text* for section labels, emoji-prefixed lines for lists.',
       '- Use language-tagged code blocks (```python) for syntax highlighting.',
-      '- Use > blockquotes for quoting messages or referenced content.',
+      '- Use > blockquotes for quoting messages or referenced content; >! on the first line makes a long quote collapsible.',
       '- Text messages: 4096 char limit (auto-chunked on paragraph boundaries, but write concisely).',
       '- Photo/file captions: 1024 char limit. Keep captions short; send details as a separate text message.',
       '',
@@ -686,7 +588,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           format: {
             type: 'string',
             enum: ['text', 'markdown', 'markdownv2'],
-            description: "Rendering mode. 'markdown' (recommended) accepts GitHub-flavored markdown and is auto-converted to Telegram MarkdownV2 with correct escaping. 'markdownv2' is raw MarkdownV2 (caller escapes). Default: 'text' (plain, no escaping).",
+            description: "Rendering mode. 'markdown' (recommended) accepts GitHub-flavored markdown and is auto-converted to Telegram MarkdownV2 with correct escaping. Supports **bold**, _italic_, ~~strike~~, `code`, fenced code, [links](url), ||spoilers||, > blockquotes (use >! on the first line for an expandable/collapsed quote), and custom emoji via ![👍](tg://emoji?id=<id>). 'markdownv2' is raw MarkdownV2 (caller escapes). Default: 'text' (plain, no escaping).",
           },
           buttons: {
             type: 'array',
@@ -696,6 +598,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               properties: {
                 text: { type: 'string', description: 'Label shown on the button (~30 chars recommended).' },
                 data: { type: 'string', description: 'Payload delivered back on tap. Max 60 bytes UTF-8.' },
+                background_color: { type: 'string', description: 'Optional Bot API 9.4 button background color (e.g. a hex like "#229ED9"). Ignored by older Telegram clients.' },
+                custom_emoji_id: { type: 'string', description: 'Optional Bot API 9.4 custom emoji id shown on the button. Requires the bot owner to have Telegram Premium.' },
               },
               required: ['text', 'data'],
             },
@@ -740,7 +644,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           format: {
             type: 'string',
             enum: ['text', 'markdown', 'markdownv2'],
-            description: "Rendering mode. 'markdown' (recommended) accepts GitHub-flavored markdown and is auto-converted to Telegram MarkdownV2 with correct escaping. 'markdownv2' is raw MarkdownV2 (caller escapes). Default: 'text' (plain, no escaping).",
+            description: "Rendering mode. 'markdown' (recommended) accepts GitHub-flavored markdown and is auto-converted to Telegram MarkdownV2 with correct escaping. Supports **bold**, _italic_, ~~strike~~, `code`, fenced code, [links](url), ||spoilers||, > blockquotes (use >! on the first line for an expandable/collapsed quote), and custom emoji via ![👍](tg://emoji?id=<id>). 'markdownv2' is raw MarkdownV2 (caller escapes). Default: 'text' (plain, no escaping).",
           },
         },
         required: ['chat_id', 'message_id', 'text'],
@@ -759,7 +663,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const quote = reply_to != null && typeof args.quote === 'string' ? args.quote : undefined
         const message_thread_id = args.message_thread_id != null ? Number(args.message_thread_id) : undefined
         const files = (args.files as string[] | undefined) ?? []
-        const rawButtons = args.buttons as Array<{ text: unknown; data: unknown }> | undefined
+        const rawButtons = args.buttons as Array<{ text: unknown; data: unknown; background_color?: unknown; custom_emoji_id?: unknown }> | undefined
         const format = (args.format as string | undefined) ?? 'text'
         const parseMode = (format === 'markdownv2' || format === 'markdown') ? 'MarkdownV2' as const : undefined
         const text = format === 'markdown'
@@ -778,10 +682,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         // Build inline keyboard from buttons, one per row. callback_data is
         // namespaced with `usr:` so the callback handler can tell custom
-        // buttons apart from the built-in permission-reply keyboard.
-        let keyboard: InlineKeyboard | undefined
+        // buttons apart from the built-in permission-reply keyboard. Built as a
+        // plain markup object so we can pass through Bot API 9.4 button styling
+        // (background_color, custom_emoji_id) regardless of grammy's typings.
+        let keyboard: { inline_keyboard: Record<string, unknown>[][] } | undefined
         if (Array.isArray(rawButtons) && rawButtons.length > 0) {
-          const kb = new InlineKeyboard()
+          const rows: Record<string, unknown>[][] = []
           for (const b of rawButtons) {
             if (typeof b?.text !== 'string' || typeof b?.data !== 'string') {
               throw new Error('each button must have string text and data')
@@ -791,9 +697,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             if (Buffer.byteLength(encoded, 'utf8') > 64) {
               throw new Error(`button data too long: ${b.data} (max 60 bytes UTF-8)`)
             }
-            kb.text(b.text, encoded).row()
+            const btn: Record<string, unknown> = { text: b.text, callback_data: encoded }
+            if (typeof b.background_color === 'string') btn.background_color = b.background_color
+            if (typeof b.custom_emoji_id === 'string') btn.custom_emoji_id = b.custom_emoji_id
+            rows.push([btn])
           }
-          keyboard = kb
+          keyboard = { inline_keyboard: rows }
         }
 
         const access = loadAccess()
@@ -1554,8 +1463,19 @@ async function handleInbound(
     ...(replyTo.text ? { reply_to_text: replyTo.text.slice(0, 200) } : {}),
   } : {}
 
+  // Reconstruct inbound formatting from Telegram entities, but only when the
+  // relayed text is the message's own text/caption (not a synthetic
+  // placeholder like "(photo)"). Plain messages pass through unchanged.
+  const rawText = ctx.message?.text ?? ctx.message?.caption
+    ?? ctx.channelPost?.text ?? ctx.channelPost?.caption
+  const entities = ctx.message?.entities ?? ctx.message?.caption_entities
+    ?? ctx.channelPost?.entities ?? ctx.channelPost?.caption_entities
+  const content = (rawText === text && entities)
+    ? entitiesToMarkdown(text, entities as InboundEntity[])
+    : text
+
   const params = {
-    content: text,
+    content,
     meta: {
       chat_id,
       ...(msgId != null ? { message_id: String(msgId) } : {}),

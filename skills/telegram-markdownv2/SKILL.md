@@ -51,6 +51,25 @@ Do NOT write `\`\`\`` - that creates literal backtick characters, not a code blo
 | Code block | unescaped ` ``` ` with content as-is |
 | Link | `[text](url)` |
 | Block quote | `>line` (each line starts with `>`) |
+| Expandable quote | first line `**>line`, every other line `>line`, last line ends with `\|\|` |
+| Custom emoji | `![👍](tg://emoji?id=<id>)` — owner must have Telegram Premium; the inner glyph is the fallback |
+
+## Auto-conversion with `format: "markdown"`
+
+The `reply`/`edit_message` `format: "markdown"` mode accepts GitHub-flavored
+markdown and handles all escaping for you, so prefer it when you don't need raw
+control. It supports the same set: `**bold**`, `_italic_`, `~~strike~~`,
+`` `code` ``, fenced code, `[links](url)`, `||spoilers||`, `> blockquotes`,
+and custom emoji `![👍](tg://emoji?id=<id>)`. For an expandable (collapsed)
+quote, start the first line of the quote with `>!`:
+
+```
+>! Summary line shown when collapsed
+> more detail, hidden until expanded
+```
+
+Use raw `format: "markdownv2"` (this skill's escaping rules) only when you need
+something the auto-converter doesn't express.
 
 ## Example Message
 
