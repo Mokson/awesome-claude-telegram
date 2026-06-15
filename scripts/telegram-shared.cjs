@@ -63,8 +63,26 @@ function formatProgress(entries, currentTool) {
   return '<blockquote>' + lines.join('\n') + '</blockquote>';
 }
 
+function formatProgressMarkdown(entries, currentTool) {
+  if (entries.length === 0 && !currentTool) return null;
+  const visible = entries.length > MAX_VISIBLE_STEPS
+    ? entries.slice(-MAX_VISIBLE_STEPS) : entries;
+  const truncated = entries.length > MAX_VISIBLE_STEPS
+    ? entries.length - MAX_VISIBLE_STEPS : 0;
+  const doneLabels = new Set(entries.map(e => e.label));
+  const lines = [];
+  if (truncated > 0) lines.push(`*... ${truncated} earlier steps*`);
+  for (const entry of visible) {
+    lines.push(`\u2713 ${(entry.label || 'Working').slice(0, 80)}`);
+  }
+  if (currentTool && !doneLabels.has(currentTool)) {
+    lines.push(`\u25B8 **${currentTool.slice(0, 80)}**\u2026`);
+  }
+  return lines.map(l => '> ' + l).join('\n');
+}
+
 module.exports = {
   LOG_FILE, PID_FILE, STOP_FILE, CURRENT_TOOL_FILE,
   readToken, escapeHtml,
-  readProgressLog, readCurrentTool, formatProgress,
+  readProgressLog, readCurrentTool, formatProgress, formatProgressMarkdown,
 };

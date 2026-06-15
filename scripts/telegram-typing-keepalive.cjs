@@ -28,7 +28,7 @@ const { spawn } = require('child_process');
 const {
   LOG_FILE, PID_FILE, STOP_FILE, CURRENT_TOOL_FILE,
   readToken, escapeHtml,
-  readProgressLog, readCurrentTool, formatProgress,
+  readProgressLog, readCurrentTool, formatProgress, formatProgressMarkdown,
 } = require('./telegram-shared.cjs');
 
 const MODE = process.argv[2] || 'post';
@@ -181,16 +181,26 @@ function handlePostToolUse(data, toolName, toolInput) {
       process.exit(0);
     }
 
-    // reply/send → final message. Clean up. A streamed draft auto-clears when
-    // the real reply arrives; only a real edit-mode message needs deleting.
+    // reply/send → final message. Keep the progress message visible as a
+    // history of tool calls. Drafts auto-clear when the real reply arrives,
+    // so finalize them into a persistent message first.
     if (action === 'reply' || action === 'send') {
       const ctx = readActive();
-      if (ctx && ctx.progress_msg_id && ctx.progress_msg_id !== 'draft') {
-        telegramPostFireForget('deleteMessage', {
-          chat_id: ctx.chat_id,
-          message_id: Number(ctx.progress_msg_id),
-        });
+      if (ctx && ctx.progress_msg_id === 'draft') {
+        const entries = readProgressLog();
+        if (entries.length > 0) {
+          const md = formatProgressMarkdown(entries, null);
+          if (md) {
+            // Fire-and-forget: send progress as a persistent message.
+            // Try sendRichMessage first (native markdown), fall back to HTML.
+            telegramPostFireForget('sendRichMessage', {
+              chat_id: ctx.chat_id,
+              rich_message: { markdown: md },
+            });
+          }
+        }
       }
+      // Edit-mode progress messages: keep them (no deleteMessage).
       cleanup();
       process.exit(0);
     }

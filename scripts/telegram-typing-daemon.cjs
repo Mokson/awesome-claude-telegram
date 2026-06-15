@@ -19,17 +19,18 @@ const https = require('https');
 const fs = require('fs');
 const {
   PID_FILE, STOP_FILE,
-  readToken, readProgressLog, readCurrentTool, formatProgress,
+  readToken, readProgressLog, readCurrentTool, formatProgress, formatProgressMarkdown,
 } = require('./telegram-shared.cjs');
 
 const chatId = process.argv[2];
 const messageArg = process.argv[3] || null;
 if (!chatId) process.exit(1);
 
-// "draft" sentinel → stream via sendMessageDraft. Otherwise it's a real
-// message_id to edit.
+// "draft" sentinel → stream via sendRichMessageDraft (preferred) or
+// sendMessageDraft (fallback). Otherwise it's a real message_id to edit.
 const DRAFT_ID = 1;
 let draftMode = messageArg === 'draft';
+let richDraftAvailable = true;
 let messageId = draftMode ? null : messageArg;
 
 const token = readToken();
@@ -87,8 +88,37 @@ function updateProgress() {
   lastEditAt = Date.now();
 
   if (draftMode) {
-    // Stream a draft. If the server predates Bot API 9.5 (or the chat rejects
-    // drafts), fall back to a real, editable message for the rest of the run.
+    // Try sendRichMessageDraft first (Bot API 10.1) — native markdown rendering.
+    // Falls back to sendMessageDraft (HTML), then to edit mode.
+    if (richDraftAvailable) {
+      const mdText = formatProgressMarkdown(entries, currentTool);
+      if (mdText) {
+        telegramPostResult('sendRichMessageDraft', {
+          chat_id: Number(chatId),
+          draft_id: DRAFT_ID,
+          rich_message: { markdown: mdText },
+        }, (ok) => {
+          if (!ok) {
+            richDraftAvailable = false;
+            // Immediately retry with plain sendMessageDraft
+            telegramPostResult('sendMessageDraft', {
+              chat_id: Number(chatId),
+              draft_id: DRAFT_ID,
+              text,
+              parse_mode: 'HTML',
+            }, (ok2) => {
+              if (!ok2) {
+                draftMode = false;
+                lastProgressText = '';
+                lastEditAt = 0;
+              }
+            });
+          }
+        });
+        return;
+      }
+    }
+    // Fallback: plain sendMessageDraft with HTML
     telegramPostResult('sendMessageDraft', {
       chat_id: Number(chatId),
       draft_id: DRAFT_ID,

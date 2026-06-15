@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.5.0
+
+`sendRichMessage` support (Bot API 10.1) and Bot API 9.4 button field fixes.
+
+### Added
+
+- **`sendRichMessage` (Bot API 10.1)**: `format: "markdown"` now tries `sendRichMessage` first — sends raw markdown directly to Telegram with 32K char limit (8x MarkdownV2). Falls back to MarkdownV2 on older servers. Latches off permanently on capability errors to avoid repeated roundtrips. Inspired by [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
+- **Rich progress drafts**: Typing daemon now streams progress via `sendRichMessageDraft` (Bot API 10.1) with native markdown formatting — bold in-progress tool, blockquote container. Falls back to `sendMessageDraft` (HTML) then edit mode.
+
+### Removed
+
+- **`telegram-markdownv2` skill**: Obsolete with `sendRichMessage`. sendMediaGroup instructions moved to MCP server instructions.
+
+### Fixed
+
+- **Button `style` field**: Corrected from hallucinated `background_color` (hex string) to the real Bot API 9.4 `style` field (`"primary"`, `"success"`, `"danger"`).
+- **Button `icon_custom_emoji_id`**: Corrected from hallucinated `custom_emoji_id` to the real Bot API 9.4 field name.
+- **MCP instructions**: Updated to reflect native table/header support, 32K char limit, and `sendRichMessage` as primary path. Removed stale "no tables" guidance.
+
 ## v2.4.0
 
 Telegram Bot API 9.3–9.5 rich-text, streaming, and styling support. Bumps `grammy` to `^1.44.0` for typed access to the new methods.
@@ -9,7 +28,7 @@ Telegram Bot API 9.3–9.5 rich-text, streaming, and styling support. Bumps `gra
 - **Native streaming progress** via `sendMessageDraft` (Bot API 9.5+). In private chats the progress indicator now streams as a flicker-free draft that auto-clears when the real reply lands, replacing the edit-based approach. Configurable with `progress.streamMode` (`"draft"` default, `"edit"` to force the legacy behavior); groups and older servers fall back to editing automatically.
 - **Richer `format: "markdown"`**: spoilers (`||text||`), native blockquotes (`> line`), expandable/collapsed blockquotes (start the first line with `>!`), and custom emoji (`![glyph](tg://emoji?id=<id>)`) — on top of the existing bold/italic/strike/code/link support.
 - **Inbound formatting preserved**: incoming Telegram message entities (bold, italic, underline, strikethrough, spoiler, code, pre, links, quotes, custom-emoji glyphs) are reconstructed into markdown before relaying to Claude, instead of being flattened to plain text.
-- **Inline button styling**: `reply` buttons accept optional `background_color` and `custom_emoji_id` (Bot API 9.4).
+- **Inline button styling**: `reply` buttons accept optional `style` and `icon_custom_emoji_id` (Bot API 9.4).
 
 ### Changed
 
