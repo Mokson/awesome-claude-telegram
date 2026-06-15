@@ -171,13 +171,30 @@ function handlePostToolUse(data, toolName, toolInput) {
 
     const action = getTelegramAction(toolName);
 
-    // react → always establish fresh context for this message
-    if (action === 'react') {
-      // Kill any existing daemon from a previous message
+    // ack → establish context and immediately start progress draft
+    if (action === 'ack') {
       killDaemon();
       try { fs.unlinkSync(LOG_FILE); } catch {}
       try { fs.unlinkSync(CURRENT_TOOL_FILE); } catch {}
-      writeActive({ chat_id: chatId, session_id: sessionId, timestamp: now() });
+      const ctx = { chat_id: chatId, session_id: sessionId, timestamp: now() };
+      if (statusUpdatesEnabled() && getToken() && useDraftFor(chatId)) {
+        ctx.progress_msg_id = 'draft';
+        writeActive(ctx);
+        spawnDaemon(chatId, 'draft');
+      } else {
+        writeActive(ctx);
+      }
+      process.exit(0);
+    }
+
+    // react → establish context (legacy, used for explicit emoji reactions)
+    if (action === 'react') {
+      if (!readActive()) {
+        killDaemon();
+        try { fs.unlinkSync(LOG_FILE); } catch {}
+        try { fs.unlinkSync(CURRENT_TOOL_FILE); } catch {}
+        writeActive({ chat_id: chatId, session_id: sessionId, timestamp: now() });
+      }
       process.exit(0);
     }
 
