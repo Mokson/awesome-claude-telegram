@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.4.0
+
+Telegram Bot API 9.3–9.5 rich-text, streaming, and styling support. Bumps `grammy` to `^1.44.0` for typed access to the new methods.
+
+### Added
+
+- **Native streaming progress** via `sendMessageDraft` (Bot API 9.5+). In private chats the progress indicator now streams as a flicker-free draft that auto-clears when the real reply lands, replacing the edit-based approach. Configurable with `progress.streamMode` (`"draft"` default, `"edit"` to force the legacy behavior); groups and older servers fall back to editing automatically.
+- **Richer `format: "markdown"`**: spoilers (`||text||`), native blockquotes (`> line`), expandable/collapsed blockquotes (start the first line with `>!`), and custom emoji (`![glyph](tg://emoji?id=<id>)`) — on top of the existing bold/italic/strike/code/link support.
+- **Inbound formatting preserved**: incoming Telegram message entities (bold, italic, underline, strikethrough, spoiler, code, pre, links, quotes, custom-emoji glyphs) are reconstructed into markdown before relaying to Claude, instead of being flattened to plain text.
+- **Inline button styling**: `reply` buttons accept optional `background_color` and `custom_emoji_id` (Bot API 9.4).
+
+### Changed
+
+- MarkdownV2 helpers factored into `markdown.ts` with a `bun test` suite (`markdown.test.ts`).
+
 ## v2.3.1
 
 ### Fixed

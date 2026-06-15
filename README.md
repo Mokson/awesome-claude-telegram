@@ -10,10 +10,11 @@ Standalone Telegram channel for [Claude Code](https://claude.com/code). Self-hos
 - Pairing-based access control with allowlists, group, and channel policies
 - Atomic poll lock with follower mode for multi-session setups
 - Persistent inbound queue with replay on restart
-- Auto-escaping markdown via `format: "markdown"`
-- Inline keyboards, reply-to context, forum supergroup topics, channel posts
+- Auto-escaping markdown via `format: "markdown"` — bold, italic, strike, code, links, spoilers, blockquotes (incl. expandable via `>!`), and custom emoji
+- Inbound formatting preserved: user spoilers, quotes, code, and links are reconstructed from Telegram entities before reaching Claude
+- Inline keyboards (with optional Bot API 9.4 background colors / custom emoji), reply-to context, forum supergroup topics, channel posts
 - Voice notes (`.ogg`/`.opus`/`.oga`) routed via `sendVoice`
-- Live progress UX: per-chat command menus, typing keepalive, tool checklists
+- Live progress UX: native flicker-free streaming via `sendMessageDraft` (Bot API 9.5+) in private chats, per-chat command menus, typing keepalive, tool checklists
 - MarkdownV2 reference skill for manual formatting
 
 ## Install
