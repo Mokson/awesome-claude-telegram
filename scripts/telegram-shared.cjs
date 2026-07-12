@@ -10,9 +10,11 @@ const LOG_FILE = path.join(tmpDir, 'telegram-progress.jsonl');
 const PID_FILE = path.join(tmpDir, 'telegram-typing-pid');
 const STOP_FILE = path.join(tmpDir, 'telegram-typing-stop');
 const CURRENT_TOOL_FILE = path.join(tmpDir, 'telegram-current-tool.txt');
+const ACTIVE_FILE = path.join(tmpDir, 'telegram-active.json');
 const ENV_FILE = path.join(os.homedir(), '.claude', 'channels', 'telegram', '.env');
 
 const MAX_VISIBLE_STEPS = 15;
+const MAX_FINAL_STEPS = 100;
 
 function readToken() {
   try {
@@ -38,6 +40,12 @@ function readProgressLog() {
   } catch { return []; }
 }
 
+function writeProgressLog(entries) {
+  try {
+    fs.writeFileSync(LOG_FILE, entries.map(e => JSON.stringify(e)).join('\n') + '\n');
+  } catch {}
+}
+
 function readCurrentTool() {
   try {
     const label = fs.readFileSync(CURRENT_TOOL_FILE, 'utf8').trim();
@@ -45,6 +53,23 @@ function readCurrentTool() {
   } catch { return null; }
 }
 
+function countSuffix(entry) {
+  return entry.count && entry.count > 1 ? ` ×${entry.count}` : '';
+}
+
+function stepCount(entries) {
+  return entries.reduce((n, e) => n + (e.count || 1), 0);
+}
+
+function formatDuration(sec) {
+  if (!(sec > 0)) return '';
+  if (sec < 90) return `${sec}s`;
+  return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+}
+
+// Live progress as HTML — the primary rendering. HTML blockquotes preserve
+// newlines reliably (rich-markdown paragraphs soft-wrap ✓ lines together)
+// and read quieter than task-list checkboxes.
 function formatProgress(entries, currentTool) {
   if (entries.length === 0 && !currentTool) return null;
   const visible = entries.length > MAX_VISIBLE_STEPS
@@ -55,14 +80,15 @@ function formatProgress(entries, currentTool) {
   const lines = [];
   if (truncated > 0) lines.push(`<i>... ${truncated} earlier steps</i>`);
   for (const entry of visible) {
-    lines.push(`\u2713 ${escapeHtml(entry.label || 'Working').slice(0, 80)}`);
+    lines.push(`✓ ${escapeHtml((entry.label || 'Working').slice(0, 80))}${countSuffix(entry)}`);
   }
   if (currentTool && !doneLabels.has(currentTool)) {
-    lines.push(`\u25B8 ${escapeHtml(currentTool).slice(0, 80)}\u2026`);
+    lines.push(`▸ ${escapeHtml(currentTool.slice(0, 80))}…`);
   }
   return '<blockquote>' + lines.join('\n') + '</blockquote>';
 }
 
+// Live progress as quoted markdown (draft streaming mode).
 function formatProgressMarkdown(entries, currentTool) {
   if (entries.length === 0 && !currentTool) return null;
   const visible = entries.length > MAX_VISIBLE_STEPS
@@ -73,16 +99,29 @@ function formatProgressMarkdown(entries, currentTool) {
   const lines = [];
   if (truncated > 0) lines.push(`*... ${truncated} earlier steps*`);
   for (const entry of visible) {
-    lines.push(`\u2713 ${(entry.label || 'Working').slice(0, 80)}`);
+    lines.push(`✓ ${(entry.label || 'Working').slice(0, 80)}${countSuffix(entry)}`);
   }
   if (currentTool && !doneLabels.has(currentTool)) {
-    lines.push(`\u25B8 **${currentTool.slice(0, 80)}**\u2026`);
+    lines.push(`▸ **${currentTool.slice(0, 80)}**…`);
   }
   return lines.map(l => '> ' + l).join('\n');
 }
 
+// Final collapsed history: an expandable blockquote so the tool-call history
+// persists in chat without dominating it.
+function formatProgressFinalHtml(entries, elapsedSec) {
+  if (entries.length === 0) return null;
+  const steps = stepCount(entries);
+  const dur = formatDuration(elapsedSec);
+  const head = `Ran ${steps} step${steps === 1 ? '' : 's'}${dur ? ` · ${dur}` : ''}`;
+  const lines = entries.slice(-MAX_FINAL_STEPS)
+    .map(e => `✓ ${escapeHtml((e.label || 'Working').slice(0, 80))}${countSuffix(e)}`);
+  return `<blockquote expandable>${head}\n${lines.join('\n')}</blockquote>`;
+}
+
 module.exports = {
-  LOG_FILE, PID_FILE, STOP_FILE, CURRENT_TOOL_FILE,
+  LOG_FILE, PID_FILE, STOP_FILE, CURRENT_TOOL_FILE, ACTIVE_FILE,
   readToken, escapeHtml,
-  readProgressLog, readCurrentTool, formatProgress, formatProgressMarkdown,
+  readProgressLog, writeProgressLog, readCurrentTool,
+  formatProgress, formatProgressMarkdown, formatProgressFinalHtml,
 };

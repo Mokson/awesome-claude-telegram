@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.6.0
+
+Persistent tool-call checklist, automatic progress (no `ack` round trip), rich edits, and hook fast-path fixes.
+
+### Added
+
+- **Persistent progress tracking** (new default, `progress.streamMode: "message"`): the first tool call sends one silent message (`disable_notification`) that is edited in place as a quiet HTML blockquote — ✓ lines for completed tools, ▸ for the in-flight one, `×N` counters for repeats. When the turn ends it collapses into an expandable blockquote summary (`Ran N steps · 42s`) and stays in chat history as background tracking info. Works in groups, unlike drafts. `"draft"` remains available as opt-in; the legacy `"edit"` value maps to `"message"`.
+- **Automatic progress start**: the server writes the hook coordination file on every inbound message, so progress tracking and typing begin without Claude calling `ack` first — saving a full model round trip per message. `ack` is now only an explicit typing signal.
+- **`Stop` hook**: finalizes and cleans up progress when the turn ends even if no reply was sent (same-session guard), replacing reliance on short staleness windows.
+- **Rich edits for `edit_message`**: `format: "markdown"` tries `editMessageText` + `rich_message` (32K, native markdown) before the MarkdownV2 fallback (4K).
+
+### Changed
+
+- **PostToolUse hook gating**: hooks now only spawn when a Telegram turn is actually active (`telegram-active.json` gate) instead of on every tool call in every session on the machine.
+- **Draft finalization** moved to PreToolUse of `reply`/`send` and now posts the collapsed expandable-blockquote history (silent) instead of a quoted list.
+- **Context staleness** window raised from 120s to 30 minutes and PreToolUse refreshes it, so single tool calls longer than 2 minutes (Agent, long Bash) no longer lose progress tracking; the daemon lifetime is 30 minutes and it also exits when the active context is torn down.
+- **Command sync** (`SessionStart`) skips the Telegram round-trip when the command list is unchanged since the last successful sync, and one failing chat id no longer aborts syncing the remaining chats.
+
+### Fixed
+
+- **Empty-progress stub**: a progress message whose only entry was still in flight when the reply landed is deleted instead of left stale.
+- **MCP instructions**: progress description, `edit_message` rich-edit capability, and removal of the stale "edit_message is MarkdownV2-only" note.
+
 ## v2.5.0
 
 `sendRichMessage` support (Bot API 10.1) and Bot API 9.4 button field fixes.

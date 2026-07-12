@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-// Sync discovered skills to Telegram BotFather command menu.
-// Called by SessionStart hook. Injects companion instructions to stdout, syncs commands. Exit 0 always.
+// Sync discovered skills to the Telegram bot command menu.
+// Called by SessionStart hook. Skips the network round-trip when the command
+// list is unchanged since the last successful sync. Exit 0 always.
 
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const os = require('os');
+const crypto = require('crypto');
 
 const HOME = os.homedir();
 const CLAUDE_DIR = path.join(HOME, '.claude');
@@ -419,8 +421,30 @@ async function main() {
   // access.json allowlist so our commands can't be overridden.
   const access = readJSON(path.join(TELEGRAM_DIR, 'access.json'));
   const chatIds = (access && access.allowFrom) || [];
+  if (chatIds.length === 0) return;
+
+  // Skip the network round-trip when nothing changed since the last
+  // successful sync — most session starts.
+  const hashFile = path.join(TELEGRAM_DIR, '.commands-sync-hash');
+  const hash = crypto.createHash('sha256')
+    .update(JSON.stringify({ commands, chatIds }))
+    .digest('hex');
+  try {
+    if (fs.readFileSync(hashFile, 'utf8').trim() === hash) return;
+  } catch {}
+
+  // Per-chat isolation: one bad recipient must not starve the rest.
+  let allOk = true;
   for (const chatId of chatIds) {
-    await setMyCommands(token, commands, { type: 'chat', chat_id: chatId });
+    try {
+      await setMyCommands(token, commands, { type: 'chat', chat_id: chatId });
+    } catch (err) {
+      allOk = false;
+      process.stderr.write(`telegram-sync-commands: setMyCommands failed for ${chatId}: ${err.message}\n`);
+    }
+  }
+  if (allOk) {
+    try { fs.writeFileSync(hashFile, hash + '\n'); } catch {}
   }
 }
 

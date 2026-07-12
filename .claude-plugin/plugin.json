@@ -1,7 +1,7 @@
 {
   "name": "claude-telegram-companion",
   "description": "Standalone Telegram channel for Claude Code. Self-hosted MCP server with access control, progress UX, and reliability hardening.",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "author": {
     "name": "Mokson",
     "url": "https://github.com/Mokson"

@@ -14,7 +14,7 @@ Standalone Telegram channel for [Claude Code](https://claude.com/code). Self-hos
 - Inbound formatting preserved: user spoilers, quotes, code, and links are reconstructed from Telegram entities before reaching Claude
 - Inline keyboards (with optional Bot API 9.4 background colors / custom emoji), reply-to context, forum supergroup topics, channel posts
 - Voice notes (`.ogg`/`.opus`/`.oga`) routed via `sendVoice`
-- Live progress UX: native flicker-free streaming via `sendMessageDraft` (Bot API 9.5+) in private chats, per-chat command menus, typing keepalive, tool checklists
+- Live progress UX: persistent tool-call tracker edited in place (quiet blockquote, silent send) that collapses into an expandable summary when the turn ends; optional legacy draft streaming (`sendMessageDraft`); per-chat command menus; typing keepalive
 - MarkdownV2 reference skill for manual formatting
 
 ## Install

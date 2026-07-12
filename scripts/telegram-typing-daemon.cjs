@@ -2,24 +2,24 @@
 // Background daemon: typing indicator + progress display.
 //
 // Two display modes:
-//   - draft  (private chats, Bot API 9.5+): streams progress via
-//     sendMessageDraft — native, flicker-free, and auto-clears when the bot
-//     sends its real reply. No persistent message is created.
-//   - edit   (groups, or older clients/servers): edits a pre-created progress
-//     message via editMessageText (the legacy behavior).
+//   - message (default): edits one persistent progress message in place
+//     (quiet HTML blockquote via editMessageText).
+//   - draft: streams progress via sendRichMessageDraft/sendMessageDraft
+//     (private chats, ephemeral 30s preview, auto-clears on the real reply).
 //
 // Reads completed steps from /tmp/telegram-progress.jsonl
 // Reads current in-progress tool from /tmp/telegram-current-tool.txt
 //
 // Usage: node telegram-typing-daemon.js <chat_id> <message_id|"draft">
-// Stop:  write /tmp/telegram-typing-stop
+// Stop:  write /tmp/telegram-typing-stop, or delete telegram-active.json
 // PID:   written to /tmp/telegram-typing-pid
 
 const https = require('https');
 const fs = require('fs');
 const {
-  PID_FILE, STOP_FILE,
-  readToken, readProgressLog, readCurrentTool, formatProgress, formatProgressMarkdown,
+  PID_FILE, STOP_FILE, ACTIVE_FILE,
+  readToken, readProgressLog, readCurrentTool,
+  formatProgress, formatProgressMarkdown,
 } = require('./telegram-shared.cjs');
 
 const chatId = process.argv[2];
@@ -38,7 +38,9 @@ if (!token) process.exit(1);
 
 fs.writeFileSync(PID_FILE, String(process.pid));
 
-const MAX_DURATION_MS = 5 * 60 * 1000;
+// Long enough to cover extended autonomous tasks; turn teardown normally
+// stops the daemon much earlier via STOP_FILE or active-file removal.
+const MAX_DURATION_MS = 30 * 60 * 1000;
 const TYPING_INTERVAL_MS = 4000;
 const PROGRESS_INTERVAL_MS = 3000;
 const startedAt = Date.now();
@@ -48,6 +50,7 @@ let lastEditAt = 0;
 
 function shouldStop() {
   if (Date.now() - startedAt > MAX_DURATION_MS) return true;
+  if (!fs.existsSync(ACTIVE_FILE)) return true;
   return fs.existsSync(STOP_FILE);
 }
 
@@ -77,7 +80,7 @@ function updateProgress() {
 
   const elapsed = Date.now() - lastEditAt;
   if (text === lastProgressText) {
-    // Edit mode: an unchanged message needs no edit. Draft mode: re-send
+    // Message mode: an unchanged message needs no edit. Draft mode: re-send
     // before the ~30s draft TTL so a long single-tool step doesn't vanish.
     if (!draftMode || elapsed < 20000) return;
   } else if (elapsed < 2000) {
@@ -89,7 +92,7 @@ function updateProgress() {
 
   if (draftMode) {
     // Try sendRichMessageDraft first (Bot API 10.1) — native markdown rendering.
-    // Falls back to sendMessageDraft (HTML), then to edit mode.
+    // Falls back to sendMessageDraft (HTML), then to message mode.
     if (richDraftAvailable) {
       const mdText = formatProgressMarkdown(entries, currentTool);
       if (mdText) {
@@ -147,6 +150,7 @@ function updateProgress() {
       chat_id: chatId,
       text,
       parse_mode: 'HTML',
+      disable_notification: true,
     }, (ok, msgId) => {
       if (msgId) messageId = String(msgId);
     });
@@ -192,12 +196,12 @@ function telegramPostResult(method, body, cb) {
     res.on('end', () => {
       try {
         const parsed = JSON.parse(data);
-        cb(parsed.ok === true, parsed.result && parsed.result.message_id || null);
-      } catch { cb(false, null); }
+        cb(parsed.ok === true, (parsed.result && parsed.result.message_id) || null, parsed.description || '');
+      } catch { cb(false, null, ''); }
     });
   });
-  req.on('error', () => cb(false, null));
-  req.on('timeout', () => { req.destroy(); cb(false, null); });
+  req.on('error', () => cb(false, null, ''));
+  req.on('timeout', () => { req.destroy(); cb(false, null, ''); });
   req.write(postData);
   req.end();
 }

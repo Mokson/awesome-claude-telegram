@@ -18,8 +18,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f \"$HOME/.claude/channels/telegram/.env\" && node \"${CLAUDE_PLUGIN_ROOT}/scripts/telegram-typing-keepalive.cjs\" || true",
+            "command": "test -f \"${TMPDIR:-/tmp}/telegram-active.json\" && node \"${CLAUDE_PLUGIN_ROOT}/scripts/telegram-typing-keepalive.cjs\" || true",
             "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"${TMPDIR:-/tmp}/telegram-active.json\" && node \"${CLAUDE_PLUGIN_ROOT}/scripts/telegram-typing-keepalive.cjs\" stop || true",
+            "timeout": 5
           }
         ]
       }

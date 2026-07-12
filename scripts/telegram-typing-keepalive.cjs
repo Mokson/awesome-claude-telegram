@@ -1,24 +1,24 @@
 #!/usr/bin/env node
-// Pre/PostToolUse hook: Telegram progress indicators.
+// PreToolUse/PostToolUse/Stop hook: Telegram progress indicators.
 //
 // Reads config from ~/.claude/channels/telegram/command-config.json:
 //   progress.statusUpdates: bool (default: true) - show tool progress in Telegram
-//   progress.streamMode: "draft" | "edit" (default: "draft") - private chats
-//     stream a flicker-free draft via sendMessageDraft (Bot API 9.5+) that
-//     auto-clears on the real reply; "edit" forces the legacy edit-a-message
-//     behavior. Groups always use edit mode.
+//   progress.streamMode: "message" (default) | "draft"
+//     "message" - one persistent progress message, sent silently on the first
+//       tool call and edited in place as a quiet HTML blockquote. When the
+//       turn ends it collapses into an expandable blockquote summary
+//       ("Ran N steps · 42s") and stays in chat history as background
+//       tracking info. Works in groups.
+//     "draft" - legacy ephemeral streaming via sendRichMessageDraft /
+//       sendMessageDraft (private chats only, 30s TTL); tool history is
+//       persisted as a separate message right before the reply.
+//     "edit" (legacy value) is treated as "message".
 //
-// PreToolUse mode (argv[2] === 'pre'):
-//   Writes current tool label to /tmp/telegram-current-tool.txt
-//   so the daemon can show it as in-progress.
-//
-// PostToolUse mode (default):
-//   Lifecycle:
-//    1. react → establish Telegram context (chat_id)
-//    2. First non-telegram tool → begin progress display, spawn daemon
-//    3. Subsequent tools → append to progress log (daemon streams/edits)
-//    4. Tool error before progress shown → send error directly to Telegram
-//    5. Claude's reply/send → clear draft / delete progress message, clean up
+// Modes (argv[2]):
+//   pre  - record in-flight tool label; establish context; begin progress;
+//          finalize draft history before reply/send executes
+//   post - append completed tools; manage daemon; finalize on reply/send
+//   stop - turn ended; finalize progress and clean up (same session only)
 
 const fs = require('fs');
 const os = require('os');
@@ -26,9 +26,10 @@ const path = require('path');
 const https = require('https');
 const { spawn } = require('child_process');
 const {
-  LOG_FILE, PID_FILE, STOP_FILE, CURRENT_TOOL_FILE,
+  LOG_FILE, PID_FILE, STOP_FILE, CURRENT_TOOL_FILE, ACTIVE_FILE,
   readToken, escapeHtml,
-  readProgressLog, readCurrentTool, formatProgress, formatProgressMarkdown,
+  readProgressLog, writeProgressLog, readCurrentTool,
+  formatProgress, formatProgressMarkdown, formatProgressFinalHtml,
 } = require('./telegram-shared.cjs');
 
 const MODE = process.argv[2] || 'post';
@@ -42,9 +43,6 @@ function getTelegramAction(name) {
   return parts[parts.length - 1] || '';
 }
 const DAEMON_SCRIPT = path.join(__dirname, 'telegram-typing-daemon.cjs');
-
-const tmpDir = os.tmpdir();
-const ACTIVE_FILE = path.join(tmpDir, 'telegram-active.json');
 
 const CONFIG_FILE = path.join(os.homedir(), '.claude', 'channels', 'telegram', 'command-config.json');
 
@@ -61,17 +59,17 @@ function statusUpdatesEnabled() {
   return _statusUpdates;
 }
 
-// "draft" (default) streams progress via sendMessageDraft; "edit" forces the
-// legacy edit-a-real-message behavior. Drafts are a private-chat feature, so
-// group chats (negative chat_id) always fall back to edit mode.
+// "message" (default) edits one persistent rich message in place; "draft"
+// opts back into the legacy ephemeral sendMessageDraft streaming. Drafts are
+// a private-chat feature, so groups (negative chat_id) always use messages.
 let _streamMode = null;
 function streamMode() {
   if (_streamMode !== null) return _streamMode;
-  _streamMode = 'draft';
+  _streamMode = 'message';
   try {
     const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    if (raw.progress && raw.progress.streamMode === 'edit')
-      _streamMode = 'edit';
+    if (raw.progress && raw.progress.streamMode === 'draft')
+      _streamMode = 'draft';
   } catch {}
   return _streamMode;
 }
@@ -79,11 +77,12 @@ function useDraftFor(chatId) {
   return streamMode() === 'draft' && Number(chatId) > 0;
 }
 
-// Begin showing progress. In draft mode no persistent message is created — the
-// daemon streams a draft that auto-clears when the bot's real reply lands. In
-// edit mode a real message is sent first, then the daemon edits it.
-function beginProgress(ctx, initialText) {
+// Begin showing progress. Message mode sends one silent persistent message
+// (quiet HTML blockquote) that the daemon then edits in place. Draft mode
+// streams an ephemeral draft that auto-clears on the real reply.
+function beginProgress(ctx, entries, currentTool) {
   try { fs.unlinkSync(STOP_FILE); } catch {}
+  if (!ctx.started_at) ctx.started_at = now();
   if (useDraftFor(ctx.chat_id)) {
     ctx.progress_msg_id = 'draft';
     ctx.timestamp = now();
@@ -91,10 +90,13 @@ function beginProgress(ctx, initialText) {
     spawnDaemon(ctx.chat_id, 'draft');
     process.exit(0);
   }
+  const text = formatProgress(entries, currentTool);
+  if (!text || !getToken()) process.exit(0);
   telegramPostSync('sendMessage', {
     chat_id: ctx.chat_id,
-    text: initialText,
+    text,
     parse_mode: 'HTML',
+    disable_notification: true,
   }, (msgId) => {
     if (msgId) {
       ctx.progress_msg_id = String(msgId);
@@ -102,7 +104,38 @@ function beginProgress(ctx, initialText) {
       writeActive(ctx);
       spawnDaemon(ctx.chat_id, ctx.progress_msg_id);
     }
+    process.exit(0);
   });
+}
+
+// Finalize the persistent progress message (collapse into an expandable
+// summary) and tear down all coordination state. Used on reply/send and on
+// Stop. Draft-mode history was already persisted in PreToolUse.
+function finalizeAndCleanup() {
+  const ctx = readActive();
+  killDaemon();
+  const done = () => { cleanup(); process.exit(0); };
+  if (!ctx || !ctx.progress_msg_id || ctx.progress_msg_id === 'draft' || !getToken()) {
+    done();
+    return;
+  }
+  const entries = readProgressLog();
+  if (entries.length === 0) {
+    // Nothing completed: the message only ever showed an in-flight line.
+    // Delete it rather than leaving a stale stub in history.
+    telegramPostSync('deleteMessage', {
+      chat_id: ctx.chat_id,
+      message_id: Number(ctx.progress_msg_id),
+    }, done);
+    return;
+  }
+  const elapsed = now() - (ctx.started_at || ctx.timestamp || now());
+  telegramPostSync('editMessageText', {
+    chat_id: ctx.chat_id,
+    message_id: Number(ctx.progress_msg_id),
+    text: formatProgressFinalHtml(entries, elapsed),
+    parse_mode: 'HTML',
+  }, done);
 }
 
 let _token = null;
@@ -126,6 +159,8 @@ process.stdin.on('end', () => {
 
     if (MODE === 'pre') {
       handlePreToolUse(toolName, toolInput, sessionId);
+    } else if (MODE === 'stop') {
+      handleStop(sessionId);
     } else {
       handlePostToolUse(data, toolName, toolInput);
     }
@@ -134,25 +169,86 @@ process.stdin.on('end', () => {
   }
 });
 
+// --- Stop: turn ended (with or without a reply) ---
+
+function handleStop(sessionId) {
+  const ctx = readActive();
+  if (!ctx || !ctx.chat_id) process.exit(0);
+  // Only the session that owns the context may finalize it. A context the
+  // server wrote that no session claimed yet is left for its owner.
+  if (!ctx.session_id || ctx.session_id !== sessionId) process.exit(0);
+  finalizeAndCleanup();
+}
+
 // --- PreToolUse: write current tool to file for daemon ---
 
 function handlePreToolUse(toolName, toolInput, sessionId) {
-  // Cheap checks first to avoid file I/O for hidden/telegram tools
-  if (isTelegramTool(toolName)) process.exit(0);
+  if (isTelegramTool(toolName)) {
+    const action = getTelegramAction(toolName);
+    if (action === 'reply' || action === 'send') {
+      const ctx = readActive();
+      if (ctx && ctx.progress_msg_id) {
+        killDaemon();
+        // Draft mode only: drafts auto-clear when the real reply arrives, so
+        // the history must be persisted BEFORE reply executes. Message-mode
+        // progress already persists; it is finalized in PostToolUse.
+        if (ctx.progress_msg_id === 'draft') {
+          const entries = readProgressLog();
+          if (entries.length > 0) {
+            const elapsed = now() - (ctx.started_at || ctx.timestamp || now());
+            const html = formatProgressFinalHtml(entries, elapsed);
+            if (html && getToken()) {
+              telegramPostSync('sendMessage', {
+                chat_id: ctx.chat_id,
+                text: html,
+                parse_mode: 'HTML',
+                disable_notification: true,
+              }, () => { process.exit(0); });
+              return;
+            }
+          }
+        }
+      }
+    }
+    process.exit(0);
+  }
+
   const label = formatToolLabel(toolName, toolInput);
   if (!label) process.exit(0);
 
-  const ctx = readActive();
+  let ctx = readActive();
+
+  // Auto-establish context: server wrote active file without session_id.
+  if (ctx && ctx.chat_id && !ctx.session_id && !isStale(ctx)) {
+    try { fs.unlinkSync(LOG_FILE); } catch {}
+    try { fs.unlinkSync(CURRENT_TOOL_FILE); } catch {}
+    killDaemon();
+    ctx.session_id = sessionId;
+    ctx.started_at = now();
+    if (statusUpdatesEnabled() && getToken() && useDraftFor(ctx.chat_id)) {
+      ctx.progress_msg_id = 'draft';
+      writeActive(ctx);
+      spawnDaemon(ctx.chat_id, 'draft');
+    } else {
+      writeActive(ctx);
+    }
+  }
+
   if (!ctx || !ctx.chat_id || isStale(ctx)) process.exit(0);
   if (ctx.session_id && ctx.session_id !== sessionId) process.exit(0);
   if (!statusUpdatesEnabled()) process.exit(0);
 
   try { fs.writeFileSync(CURRENT_TOOL_FILE, label); } catch {}
 
+  // Keep the context fresh while tools are starting, so a long-running tool
+  // doesn't let the context go stale before its PostToolUse fires.
+  ctx.timestamp = now();
+  writeActive(ctx);
+
   // First visible tool: begin progress display and spawn daemon eagerly
   // so long-running tools appear in-progress immediately
   if (!ctx.progress_msg_id && getToken()) {
-    beginProgress(ctx, formatProgress([], label));
+    beginProgress(ctx, readProgressLog(), label);
     return;
   }
 
@@ -171,12 +267,12 @@ function handlePostToolUse(data, toolName, toolInput) {
 
     const action = getTelegramAction(toolName);
 
-    // ack → establish context and immediately start progress draft
+    // ack → establish context and immediately start progress
     if (action === 'ack') {
       killDaemon();
       try { fs.unlinkSync(LOG_FILE); } catch {}
       try { fs.unlinkSync(CURRENT_TOOL_FILE); } catch {}
-      const ctx = { chat_id: chatId, session_id: sessionId, timestamp: now() };
+      const ctx = { chat_id: chatId, session_id: sessionId, timestamp: now(), started_at: now() };
       if (statusUpdatesEnabled() && getToken() && useDraftFor(chatId)) {
         ctx.progress_msg_id = 'draft';
         writeActive(ctx);
@@ -193,33 +289,16 @@ function handlePostToolUse(data, toolName, toolInput) {
         killDaemon();
         try { fs.unlinkSync(LOG_FILE); } catch {}
         try { fs.unlinkSync(CURRENT_TOOL_FILE); } catch {}
-        writeActive({ chat_id: chatId, session_id: sessionId, timestamp: now() });
+        writeActive({ chat_id: chatId, session_id: sessionId, timestamp: now(), started_at: now() });
       }
       process.exit(0);
     }
 
-    // reply/send → final message. Keep the progress message visible as a
-    // history of tool calls. Drafts auto-clear when the real reply arrives,
-    // so finalize them into a persistent message first.
+    // reply/send → collapse the persistent progress message and clean up.
+    // (Draft history was already persisted in PreToolUse.)
     if (action === 'reply' || action === 'send') {
-      const ctx = readActive();
-      if (ctx && ctx.progress_msg_id === 'draft') {
-        const entries = readProgressLog();
-        if (entries.length > 0) {
-          const md = formatProgressMarkdown(entries, null);
-          if (md) {
-            // Fire-and-forget: send progress as a persistent message.
-            // Try sendRichMessage first (native markdown), fall back to HTML.
-            telegramPostFireForget('sendRichMessage', {
-              chat_id: ctx.chat_id,
-              rich_message: { markdown: md },
-            });
-          }
-        }
-      }
-      // Edit-mode progress messages: keep them (no deleteMessage).
-      cleanup();
-      process.exit(0);
+      finalizeAndCleanup();
+      return;
     }
 
     // edit/edit_message → clean up
@@ -251,7 +330,7 @@ function handlePostToolUse(data, toolName, toolInput) {
       chat_id: ctx.chat_id,
       text: `<b>Failed:</b> ${escapeHtml(errorText)}`,
       parse_mode: 'HTML',
-    }, () => { cleanup(); });
+    }, () => { cleanup(); process.exit(0); });
     return;
   }
 
@@ -259,26 +338,27 @@ function handlePostToolUse(data, toolName, toolInput) {
   const label = formatToolLabel(toolName, toolInput);
   if (!label) process.exit(0);
 
-  // Deduplicate: exact label match against existing entries
-  try {
-    const raw = fs.readFileSync(LOG_FILE, 'utf8').trim();
-    if (raw) {
-      const needle = `"label":${JSON.stringify(label)},`;
-      if (raw.includes(needle)) {
-        ctx.timestamp = now();
-        writeActive(ctx);
-        process.exit(0);
-      }
-    }
-  } catch {}
+  // Deduplicate: repeated identical labels increment a ×N counter instead of
+  // silently collapsing (or spamming a line per repeat).
+  const entries = readProgressLog();
+  const existing = entries.find(e => e.label === label);
+  if (existing) {
+    existing.count = (existing.count || 1) + 1;
+    existing.time = now();
+    writeProgressLog(entries);
+    ctx.timestamp = now();
+    writeActive(ctx);
+    process.exit(0);
+  }
 
   fs.appendFileSync(LOG_FILE, JSON.stringify({
     label, time: now(), status: 'done',
   }) + '\n');
+  entries.push({ label, time: now(), status: 'done' });
 
   // Begin progress display if none exists yet
   if (!ctx.progress_msg_id && getToken()) {
-    beginProgress(ctx, `<blockquote>\u2713 ${escapeHtml(label)}</blockquote>`);
+    beginProgress(ctx, entries, readCurrentTool());
     return;
   }
 
@@ -286,7 +366,7 @@ function handlePostToolUse(data, toolName, toolInput) {
   writeActive(ctx);
 
   // If daemon died, refresh progress immediately and respawn. (Drafts can't be
-  // edited out-of-band, so only nudge real edit-mode messages here.)
+  // edited out-of-band, so only nudge real messages here.)
   if (ctx.progress_msg_id && !isDaemonAlive()) {
     if (ctx.progress_msg_id !== 'draft') editProgress(ctx);
     try { fs.unlinkSync(STOP_FILE); } catch {}
@@ -299,7 +379,9 @@ function handlePostToolUse(data, toolName, toolInput) {
 // --- Helpers ---
 
 function now() { return Math.floor(Date.now() / 1000); }
-function isStale(ctx) { return ctx.timestamp && (now() - ctx.timestamp) > 120; }
+// Generous window: single tool calls (Agent, long Bash) can run for many
+// minutes. Turn teardown is handled by the Stop hook, not staleness.
+function isStale(ctx) { return ctx.timestamp && (now() - ctx.timestamp) > 1800; }
 function readActive() {
   try { return JSON.parse(fs.readFileSync(ACTIVE_FILE, 'utf8')); } catch { return null; }
 }
@@ -320,6 +402,8 @@ function looksLikeError(output) {
 
 // --- Telegram API ---
 
+// POST and wait for the response. cb receives the returned message_id (or a
+// truthy ok signal for edits) or null. The callback owns process exit.
 function telegramPostSync(method, body, cb) {
   if (!getToken()) { cb(null); process.exit(0); return; }
   const postData = JSON.stringify(body);
@@ -338,13 +422,13 @@ function telegramPostSync(method, body, cb) {
     res.on('end', () => {
       try {
         const parsed = JSON.parse(data);
-        cb(parsed.result && parsed.result.message_id || null);
+        if (!parsed.ok) { cb(null); return; }
+        cb((parsed.result && parsed.result.message_id) || true);
       } catch { cb(null); }
-      process.exit(0);
     });
   });
-  req.on('error', () => { cb(null); process.exit(0); });
-  req.on('timeout', () => { req.destroy(); cb(null); process.exit(0); });
+  req.on('error', () => { cb(null); });
+  req.on('timeout', () => { req.destroy(); cb(null); });
   req.write(postData);
   req.end();
 }
@@ -395,10 +479,10 @@ function spawnDaemon(chatId, messageId) {
   } catch {}
 }
 
-// --- Progress editing ---
+// --- Progress editing (one-shot nudge when the daemon died) ---
 
 function editProgress(ctx) {
-  if (!ctx.progress_msg_id || !getToken()) return;
+  if (!ctx.progress_msg_id || ctx.progress_msg_id === 'draft' || !getToken()) return;
   const entries = readProgressLog();
   const currentTool = readCurrentTool();
   const text = formatProgress(entries, currentTool);

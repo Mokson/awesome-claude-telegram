@@ -12,6 +12,6 @@
   },
   "progress": {
     "statusUpdates": true,
-    "streamMode": "draft"
+    "streamMode": "message"
   }
 }
